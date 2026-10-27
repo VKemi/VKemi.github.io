@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0d0b18">
 <link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icon-192.png">
 <title>Kemerev</title>
 <style>
 /* ===== Переменные и база ===== */
@@ -370,7 +371,7 @@ let tracks = LS.get('kem.tracks', []);       // метаданные треко�
 let playlists = LS.get('kem.playlists', []); // [{id,name,ids:[]}]
 const settings = Object.assign({
   volume: 1, repeat: 'none', shuffle: false, rate: 1, sort: 'name',
-  keep: true, lastId: null, lastPos: 0, lastCtx: 'all'
+  keep: true, nativeNote: true, lastId: null, lastPos: 0, lastCtx: 'all'
 }, LS.get('kem.settings', {}));
 
 const files = new Map();       // id -> File (выбран в этой сессии)
@@ -610,6 +611,50 @@ function initMediaSession() {
     H('seekforward', d => { audio.currentTime = Math.min(audio.duration || 1e9, audio.currentTime + (d.seekOffset || 10)); updatePos(); });
   }
 }
+
+/* ---- Обычное Android-уведомление «Сейчас играет» ----
+   Работает ТОЛЬКО внутри APK-конвертера, где есть мост window.AndroidAPI.
+   Это простое уведомление (без кнопок управления): шторка-плеер так не сделать.
+   В Chrome / PWA этот блок ничего не делает — там работает Media Session. */
+const hasNative = () => typeof window.AndroidAPI !== 'undefined' && window.AndroidAPI && typeof window.AndroidAPI.showNotification === 'function';
+let nativeId = null, nativeKey = '', nativeTimer = null;
+
+function nativeCancel() {
+  if (nativeId != null && hasNative() && typeof window.AndroidAPI.cancelNotification === 'function') {
+    try { window.AndroidAPI.cancelNotification(nativeId); } catch (e) {}
+  }
+  nativeId = null; nativeKey = '';
+}
+function nativeShow() {
+  if (!settings.nativeNote || !hasNative() || !cur) return;
+  const key = cur.id + '|' + tTitle(cur);
+  if (key === nativeKey) return;               // для этого трека уведомление уже показано
+  nativeCancel(); nativeKey = key;
+  try { window.AndroidAPI.showNotification('▶ ' + tTitle(cur), tArtist(cur) + (cur.folder ? ' · ' + cur.folder : ''), tTitle(cur) + '\n' + tArtist(cur)); } catch (e) {}
+}
+
+// Ответ моста приходит в window.onAndroidEvent(event, data); сохраняем id, чтобы потом убрать уведомление
+const prevAndroidHandler = window.onAndroidEvent;
+window.onAndroidEvent = function (event, data) {
+  try {
+    if (typeof data === 'string') { try { data = JSON.parse(data); } catch (e) {} }
+    if (event === 'notificationResult' && data) {
+      if (data.success && data.notificationId != null && !/cancel/i.test(String(data.action || ''))) {
+        nativeId = data.notificationId;
+        if (audio.paused && !nativeTimer) nativeCancel();   // трек уже на паузе — не оставляем «висеть»
+      } else if (!data.success && data.error === 'permission_denied') {
+        toast('Разрешите уведомления для приложения в настройках Android');
+      }
+    }
+  } catch (e) {}
+  if (typeof prevAndroidHandler === 'function') { try { prevAndroidHandler(event, data); } catch (e) {} }
+};
+audio.addEventListener('play', () => { clearTimeout(nativeTimer); nativeTimer = null; nativeShow(); });
+audio.addEventListener('pause', () => {
+  clearTimeout(nativeTimer);
+  // небольшая задержка: между треками событие pause срабатывает на долю секунды
+  nativeTimer = setTimeout(() => { nativeTimer = null; if (audio.paused) nativeCancel(); }, 1500);
+});
 
 /* =====================================================================
    7. СПИСКИ, РЕНДЕР
@@ -960,6 +1005,8 @@ function addMusicMenu() {
     { icon: 'note', label: 'Выбрать файлы', fn: () => $('#fileInput').click() },
     { icon: 'save', label: 'Хранить копии в приложении', right: settings.keep ? 'Вкл' : 'Выкл', on: settings.keep,
       fn: () => { settings.keep = !settings.keep; saveSettings(); toast(settings.keep ? 'Новые треки будут сохраняться в приложении' : 'Копии не сохраняются: после перезапуска папку нужно выбрать снова'); } },
+    ...(hasNative() ? [{ icon: 'note', label: 'Уведомление «Сейчас играет»', right: settings.nativeNote ? 'Вкл' : 'Выкл', on: settings.nativeNote,
+      fn: () => { settings.nativeNote = !settings.nativeNote; saveSettings(); if (settings.nativeNote) nativeShow(); else nativeCancel(); toast(settings.nativeNote ? 'Уведомление включено' : 'Уведомление выключено'); } }] : []),
     { icon: 'trash', label: 'Очистить сохранённые копии', right: String(storedIds.size), danger: true,
       fn: async () => {
         const r = await showModal({ title: 'Очистить копии?', text: 'Треки останутся в списке, но для воспроизведения папку нужно будет выбрать заново.', ok: 'Очистить', danger: true });

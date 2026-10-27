@@ -1,5 +1,5 @@
 // Service worker Kemerev: офлайн-режим (сначала сеть, при её отсутствии — кэш)
-const CACHE = 'kemerev-v1';
+const CACHE = 'kemerev-v2';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
